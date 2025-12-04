@@ -1,0 +1,68 @@
+name: Stop EKS Node Group & RDS in AWS
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs "At 09:00 PM IST on Moday-Friday. Below time is mentioned in UTC time zone" (see https://crontab.guru)
+    - cron: '30 15 * * 1-5'
+
+jobs:
+  stop-nodegroup:
+    name: Stop Node Group
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        nodegroup: [
+          { name: 'nonprod',minSize: 0,maxSize: 2,desiredSize: 0 },
+          { name: 'performance',minSize: 0,maxSize: 1,desiredSize: 0 }
+        ]
+    env:
+      CLUSTER_NAME: bahmni-cluster-nonprod
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BAHMNI_AWS_ID }}
+          aws-secret-access-key: ${{ secrets.BAHMNI_AWS_SECRET }}
+          aws-region: ap-south-1
+          role-to-assume: ${{ secrets.BAHMNI_INFRA_ADMIN_ROLE }}
+          role-duration-seconds: 1200  # 20 mins
+          role-session-name: BahmniInfraAdminSession
+
+      - name: Stop ${{ matrix.nodegroup.name }} Node Group
+        run: |
+          aws eks update-nodegroup-config  \
+          --cluster-name=${{ env.CLUSTER_NAME }}  \
+          --nodegroup-name=${{ matrix.nodegroup.name }}  \
+          --scaling-config minSize=${{ matrix.nodegroup.minSize }},maxSize=${{ matrix.nodegroup.maxSize }},desiredSize=${{ matrix.nodegroup.desiredSize }} > /dev/null 2>&1
+  stop-rds:
+    name: Stop RDS
+    needs: stop-nodegroup
+    runs-on: ubuntu-latest
+    env:
+      RDS_NAME: bahmni-rds-nonprod
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BAHMNI_AWS_ID }}
+          aws-secret-access-key: ${{ secrets.BAHMNI_AWS_SECRET }}
+          aws-region: ap-south-1
+          role-to-assume: ${{ secrets.BAHMNI_INFRA_ADMIN_ROLE }}
+          role-duration-seconds: 1200  # 20 mins
+          role-session-name: BahmniInfraAdminSession
+
+      - name: Start ${{ env.RDS_NAME }} RDS Instance
+        run: |
+          aws rds stop-db-instance --db-instance-identifier ${{ env.RDS_NAME }} > /dev/null 2>&1
+
+  post-notification:
+    name: Post Slack Notification
+    needs: stop-rds
+    runs-on: ubuntu-latest
+    env:
+      RDS_NAME: bahmni-rds-nonprod
+    steps:
+      - name: Post Deployment Status To Slack
+        run: |
+          curl -X POST -H 'Content-type: application/json' --data '{"text":":white_check_mark:  Hello, EKS Node Groups & RDS Instance stopped for the day"}' ${{ secrets.SLACK_WEBHOOK_URL }}
